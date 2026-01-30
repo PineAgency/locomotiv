@@ -116,8 +116,8 @@ export default function MapPanel({
             target: null, // Don't wipe
             distanceKm: null, // Don't wipe
             duration: null,
-            speed: speed,
-            heading: heading
+            speed: speed ?? undefined,
+            heading: heading ?? undefined
           });
         }
       },
