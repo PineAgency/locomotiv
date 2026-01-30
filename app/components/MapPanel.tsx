@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 
 type LatLng = { lat: number; lng: number };
 
-export default function MapPanel({
+const MapPanel = React.memo(function MapPanel({
   onUpdate,
   isJourneyActive = false
 }: {
@@ -74,27 +74,29 @@ export default function MapPanel({
     if (!mapDivRef.current) return;
     const g = (window as any).google;
 
-    // initialize map
-    mapRef.current = new g.maps.Map(mapDivRef.current, {
-      center: { lat: 0, lng: 0 },
-      zoom: 3,
-      disableDefaultUI: false, // We might want to disable this for Journey Mode later
-    });
+    // initialize map if not already done
+    if (!mapRef.current) {
+      mapRef.current = new g.maps.Map(mapDivRef.current, {
+        center: { lat: 0, lng: 0 },
+        zoom: 3,
+        disableDefaultUI: false,
+        zoomControl: true, // Specific controls
+        gestureHandling: 'greedy', // Better mobile touch handling
+      });
 
-    // Init Directions
-    directionsServiceRef.current = new g.maps.DirectionsService();
-    directionsRendererRef.current = new g.maps.DirectionsRenderer({
-      map: mapRef.current,
-      suppressMarkers: false,
-    });
+      // Init Directions
+      directionsServiceRef.current = new g.maps.DirectionsService();
+      directionsRendererRef.current = new g.maps.DirectionsRenderer({
+        map: mapRef.current,
+        suppressMarkers: false,
+      });
 
-    // click to set target
-    mapRef.current.addListener('click', (e: any) => {
-      // Prevent setting target if Journey is active? Or allow re-routing?
-      // Let's allow re-routing for now.
-      const coords = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-      setTarget(coords);
-    });
+      // click to set target
+      mapRef.current.addListener('click', (e: any) => {
+        const coords = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+        setTarget(coords);
+      });
+    }
 
   }, [scriptLoaded, scriptError]);
 
@@ -109,7 +111,62 @@ export default function MapPanel({
 
         setUserPos(coords);
 
-        // Immediate update for Journey Mode / Speedometer
+        const g = (window as any).google;
+        const marker = userMarkerRef.current;
+        const map = mapRef.current;
+
+        // --- OPTIMIZED MAP UPDATES ---
+        if (g && map) {
+          // 1. Create Marker if missing
+          if (!marker) {
+            userMarkerRef.current = new g.maps.Marker({
+              position: coords,
+              map: map,
+              title: "Your Location",
+              // Default icon initially
+            });
+          } else {
+            // 2. Just update position (Cheap)
+            marker.setPosition(coords);
+          }
+
+          const currentMarker = userMarkerRef.current;
+
+          // 3. Update Icon (Only if Journey Mode toggles or heading changes significantly)
+          // For now, simpler: Just set icon type based on mode.
+          // Note: Creating a new object literals every frame can be expensive if complex, 
+          // but for just { path, ... } it's okay-ish. 
+          // To be safer, we could memoize, but let's just use the logic directly.
+
+          if (isJourneyActive) {
+            const arrowIcon = {
+              path: g.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+              scale: 6,
+              fillColor: "#4285F4",
+              fillOpacity: 1,
+              strokeWeight: 2,
+              rotation: heading || 0 // Use GPS heading
+            };
+            currentMarker.setIcon(arrowIcon);
+
+            // 4. Smooth Pan (Only if "far" or force center?)
+            // Instead of panTo every frame (which jerks/blinks), use panTo only if distance is large?
+            // Or just let it be. But panTo is usually animated.
+            // If we really want "Game-like" camera, we'd need to disable panTo animation or use requestAnimationFrame.
+            // For standard Maps API, calling panTo repeatedly is okay but might fight user interaction.
+
+            // Only auto-center if user hasn't dragged map away? 
+            // For this task, let's enforce center but maybe NOT zoom strictness every frame.
+            map.panTo(coords);
+
+            // Don't fight Zoom unless necessary?
+            // map.setZoom(18); // This prevents zooming out.
+          } else {
+            currentMarker.setIcon(null); // Reset to default red pin
+          }
+        }
+
+        // Parent Callback
         if (onUpdate) {
           onUpdate({
             userPos: coords,
@@ -128,102 +185,55 @@ export default function MapPanel({
     return () => {
       if (watcherRef.current != null) navigator.geolocation.clearWatch(watcherRef.current as number);
     };
-  }, [onUpdate]);
+  }, [onUpdate, isJourneyActive]);
+  // Added isJourneyActive to dependency so we switch icons immediately on mode change
+  // Note: onUpdate is memoized by parent, so this effect resets only when mode changes.
 
-  // Handle Visuals & Routing
+  // Handle Routing Logic separately
   useEffect(() => {
-    if (!scriptLoaded || !directionsServiceRef.current || !directionsRendererRef.current || !mapRef.current) return;
+    if (!directionsServiceRef.current || !directionsRendererRef.current || !userPos || !target) return;
     const g = (window as any).google;
 
-    // 1. Handle User Position Marker & Pan Logic
-    if (userPos) {
-      // Create/Update marker
-      if (!userMarkerRef.current) {
-        userMarkerRef.current = new g.maps.Marker({
-          position: userPos,
-          map: mapRef.current,
-          title: "Your Location",
-          // Custom Icon for Journey Mode?
-          icon: isJourneyActive ? {
-            path: g.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-            scale: 6,
-            fillColor: "#4285F4",
-            fillOpacity: 1,
-            strokeWeight: 2,
-            rotation: 0 // Ideally rotate based on heading
-          } : undefined
-        });
-      } else {
-        userMarkerRef.current.setPosition(userPos);
-        userMarkerRef.current.setMap(mapRef.current);
-
-        // Update Icon state if changed
-        if (isJourneyActive) {
-          userMarkerRef.current.setIcon({
-            path: g.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-            scale: 6,
-            fillColor: "#4285F4",
-            fillOpacity: 1,
-            strokeWeight: 2,
-            rotation: 0
-          });
-        } else {
-          userMarkerRef.current.setIcon(null); // Default marker
-        }
-      }
-
-      // AUTO-CENTER LOGIC FIX:
-      // Only center if:
-      // 1. First time locating user (!initialCenterRef.current)
-      // 2. OR Journey Mode is active (Follow user)
-      if (!initialCenterRef.current) {
-        mapRef.current.panTo(userPos);
-        mapRef.current.setZoom(15);
-        initialCenterRef.current = true;
-      } else if (isJourneyActive) {
-        mapRef.current.panTo(userPos);
-        mapRef.current.setZoom(18); // Navigation Zoom
-      }
-    }
-
-    // 2. Handle Routing
-    if (userPos && target) {
-      directionsServiceRef.current.route(
-        {
-          origin: userPos,
-          destination: target,
-          travelMode: g.maps.TravelMode.DRIVING,
-        },
-        (result: any, status: any) => {
-          if (status === g.maps.DirectionsStatus.OK) {
-            directionsRendererRef.current.setDirections(result);
-            // Hide individual user marker if renderer shows it?
-            // Keeping both for now ensures "Live" position is always visible even if route is static.
-
-            const leg = result.routes[0].legs[0];
-            const distText = leg.distance.text;
-            const distVal = leg.distance.value;
-            const durText = leg.duration.text;
-            const distKm = parseFloat((distVal / 1000).toFixed(1));
-
-            setRouteInfo({ distance: distText, duration: durText });
-            if (onUpdate) onUpdate({ userPos, target, distanceKm: distKm, duration: durText });
-          } else {
-            console.error('Directions request failed ' + status);
+    directionsServiceRef.current.route(
+      {
+        origin: userPos,
+        destination: target,
+        travelMode: g.maps.TravelMode.DRIVING,
+      },
+      (result: any, status: any) => {
+        if (status === g.maps.DirectionsStatus.OK) {
+          directionsRendererRef.current.setDirections(result);
+          const leg = result.routes[0].legs[0];
+          setRouteInfo({ distance: leg.distance.text, duration: leg.duration.text });
+          if (onUpdate) {
+            // We don't pass userPos/target here to avoid clobbering? 
+            // Wait, onUpdate expects everything.
+            onUpdate({
+              userPos,
+              target,
+              distanceKm: parseFloat((leg.distance.value / 1000).toFixed(1)),
+              duration: leg.duration.text
+            });
           }
         }
-      );
-    } else if (userPos && !target) {
-      directionsRendererRef.current.setDirections({ routes: [] });
-      setRouteInfo(null);
-    }
-  }, [scriptLoaded, userPos, target, onUpdate, isJourneyActive]);
+      }
+    );
+  }, [target]); // Only re-route when target changes (or userPos changes significantly? ignored for now to save API calls)
 
+  // One-time initial center
+  useEffect(() => {
+    if (userPos && !initialCenterRef.current && mapRef.current) {
+      mapRef.current.panTo(userPos);
+      mapRef.current.setZoom(15);
+      initialCenterRef.current = true;
+    }
+  }, [userPos]);
+
+  // View Helpers
   const handleCenterOnUser = () => {
     if (!mapRef.current || !userPos) return;
     mapRef.current.panTo(userPos);
     mapRef.current.setZoom(isJourneyActive ? 18 : 15);
-    initialCenterRef.current = true; // Effectively we just centered
   };
 
   if (scriptError) {
@@ -297,4 +307,6 @@ export default function MapPanel({
       )}
     </div>
   );
-}
+});
+
+export default MapPanel;
