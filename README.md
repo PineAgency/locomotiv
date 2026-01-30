@@ -35,7 +35,7 @@
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/yourusername/locomotiv.git
+    git clone https://github.com/PineAgency/locomotiv.git
     cd locomotiv
     ```
 
