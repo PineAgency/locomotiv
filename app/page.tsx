@@ -25,6 +25,7 @@ export default function CarLandingPage() {
   const [trip, setTrip] = useState({
     origin: '',
     destination: '',
+    destinationAddress: '', // Added Address
     distanceKm: 0,
     duration: '',
   });
@@ -71,7 +72,9 @@ export default function CarLandingPage() {
             `https://vpic.nhtsa.dot.gov/api/vehicles/getmodelsformakeyear/make/${encodeURIComponent(selection.make)}/modelyear/${selection.year}?format=json`
           );
           const data = await res.json();
-          setModels(data.Results || []);
+          const uniqueModels = Array.from(new Map((data.Results || []).map((m: any) => [m.Model_ID, m])).values());
+          uniqueModels.sort((a: any, b: any) => a.Model_Name.localeCompare(b.Model_Name));
+          setModels(uniqueModels);
         } catch (err) {
           console.error('Failed to load models');
         } finally {
@@ -236,13 +239,14 @@ export default function CarLandingPage() {
 
   /* Fix: Memoize onUpdate to prevent infinite render loop in MapPanel */
   /* ENHANCED: Now receives speed and heading updates too */
-  const handleMapUpdate = useCallback(({ userPos, target, distanceKm, duration, speed }:
-    { userPos?: any, target?: any, distanceKm?: number | null, duration?: string | null, speed?: number }) => {
+  const handleMapUpdate = useCallback(({ userPos, target, distanceKm, duration, speed, address }:
+    { userPos?: any, target?: any, distanceKm?: number | null, duration?: string | null, speed?: number, address?: string }) => {
 
     setTrip(prev => ({
       ...prev,
       origin: userPos ? `${userPos.lat.toFixed(5)}, ${userPos.lng.toFixed(5)}` : (prev.origin || ''),
       destination: target ? `${target.lat.toFixed(5)}, ${target.lng.toFixed(5)}` : (prev.destination || ''),
+      destinationAddress: address || prev.destinationAddress, // Update Address
       distanceKm: distanceKm ?? prev.distanceKm,
       duration: duration || prev.duration,
     }));
@@ -335,13 +339,16 @@ export default function CarLandingPage() {
                 <h2 className="text-3xl md:text-4xl font-black bg-gradient-to-r from-green-600 to-blue-600 bg-clip-text text-transparent mb-4">
                   🚗 {selection.make} {selection.model} Trip Analysis
                 </h2>
-                <p className="text-xl text-slate-600 max-w-2xl mx-auto">
+                <div className="text-xl text-slate-600 max-w-2xl mx-auto flex flex-col items-center gap-2">
                   {trip.origin && trip.destination ? (
-                    <span>Trip Distance: {trip.distanceKm}km {trip.duration ? `• ${trip.duration}` : ''} | {fuelData.fuelType}</span>
+                    <>
+                      <span className="font-semibold text-slate-800">{trip.distanceKm}km {trip.duration ? `• ${trip.duration}` : ''}</span>
+                      {trip.destinationAddress && <span className="text-sm bg-white/50 px-3 py-1 rounded-full border border-slate-200">{trip.destinationAddress}</span>}
+                    </>
                   ) : (
                     <span>Select origin and destination on the map below to calculate fuel costs.</span>
                   )}
-                </p>
+                </div>
               </div>
             )}
 

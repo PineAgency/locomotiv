@@ -1,5 +1,9 @@
 'use client';
 
+import Link from 'next/link';
+import { Search } from 'lucide-react';
+import SearchModal from './SearchModal';
+
 import React, { useEffect, useRef, useState } from 'react';
 
 type LatLng = { lat: number; lng: number };
@@ -15,6 +19,7 @@ const MapPanel = React.memo(function MapPanel({
     duration: string | null;
     speed?: number;
     heading?: number;
+    address?: string; // New field
   }) => void,
   isJourneyActive?: boolean
 }) {
@@ -25,12 +30,15 @@ const MapPanel = React.memo(function MapPanel({
   const directionsServiceRef = useRef<any | null>(null);
   const directionsRendererRef = useRef<any | null>(null);
   const userMarkerRef = useRef<any | null>(null);
+  const geocoderRef = useRef<google.maps.Geocoder | null>(null); // Geocoder Ref
 
   // Ref to track if we have performed the initial center on user
   const initialCenterRef = useRef(false);
 
   const [userPos, setUserPos] = useState<LatLng | null>(null);
   const [target, setTarget] = useState<LatLng | null>(null);
+  const [targetAddress, setTargetAddress] = useState<string>(''); // Address State
+  const [isSearchOpen, setIsSearchOpen] = useState(false); // Search Modal State
   const [scriptLoaded, setScriptLoaded] = useState(false);
   const [routeInfo, setRouteInfo] = useState<{ distance: string, duration: string } | null>(null);
   const watcherRef = useRef<number | null>(null);
@@ -52,7 +60,7 @@ const MapPanel = React.memo(function MapPanel({
       return;
     }
     const s = document.createElement('script');
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}`;
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`; // ADDED PLACES LIBRARY
     s.async = true;
     s.defer = true;
     s.setAttribute('data-google-maps', '1');
@@ -91,14 +99,52 @@ const MapPanel = React.memo(function MapPanel({
         suppressMarkers: false,
       });
 
-      // click to set target
+      // Init Geocoder
+      geocoderRef.current = new g.maps.Geocoder();
+
+      // click to set target & reverse geocode
       mapRef.current.addListener('click', (e: any) => {
         const coords = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-        setTarget(coords);
+        handleSetTarget(coords);
       });
     }
 
   }, [scriptLoaded, scriptError]);
+
+  // Unified Target Setter (handles coords + reverse geocode)
+  const handleSetTarget = (coords: LatLng, explicitAddress?: string) => {
+    setTarget(coords);
+    
+    if (explicitAddress) {
+      setTargetAddress(explicitAddress);
+    } else {
+      // Reverse Geocode
+      if (geocoderRef.current) {
+        geocoderRef.current.geocode({ location: coords }, (results, status) => {
+          if (status === 'OK' && results && results[0]) {
+             // Prefer shorter address components if available, but formatted_address is safest
+             // Let's try to make it slightly cleaner: Street + City
+             const addr = results[0].formatted_address; 
+             // We could process components for a "shorter" version if needed:
+             // const street = results[0].address_components.find(c => c.types.includes('route'))?.short_name;
+             setTargetAddress(addr);
+          } else {
+            setTargetAddress('Unknown location');
+          }
+        });
+      }
+    }
+  };
+
+  const handleSearchSelect = (loc: { lat: number, lng: number, address: string }) => {
+     const coords = { lat: loc.lat, lng: loc.lng };
+     handleSetTarget(coords, loc.address);
+     
+     if (mapRef.current) {
+         mapRef.current.panTo(coords);
+         mapRef.current.setZoom(16);
+     }
+  };
 
   // Watch Geolocation (Speed + High Frequency)
   useEffect(() => {
@@ -212,13 +258,14 @@ const MapPanel = React.memo(function MapPanel({
               userPos,
               target,
               distanceKm: parseFloat((leg.distance.value / 1000).toFixed(1)),
-              duration: leg.duration.text
+              duration: leg.duration.text,
+              address: targetAddress // Pass address up
             });
           }
         }
       }
     );
-  }, [target]); // Only re-route when target changes (or userPos changes significantly? ignored for now to save API calls)
+  }, [target, targetAddress, onUpdate, userPos]); // Re-run when target or address changes
 
   // One-time initial center
   useEffect(() => {
@@ -247,7 +294,7 @@ const MapPanel = React.memo(function MapPanel({
 
   // Visual Layout
   return (
-    <div className={`transition-all duration-300 ${isJourneyActive ? 'fixed inset-0 z-0 h-screen w-screen' : 'max-w-5xl mx-auto bg-white rounded-2xl shadow p-6'}`}>
+    <div className={`transition-all duration-300 ${isJourneyActive ? 'fixed inset-0 z-0 h-screen w-screen' : 'max-w-5xl mx-auto bg-white rounded-2xl shadow p-6 relative'}`}>
 
       {!scriptLoaded && (
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-50 bg-white p-4 rounded shadow">
@@ -261,16 +308,12 @@ const MapPanel = React.memo(function MapPanel({
           <div>
             <h3 className="text-xl font-bold text-slate-900">Trip Route Planner</h3>
             <p className="text-sm text-slate-600">
-              {routeInfo ? `Driving Distance: ${routeInfo.distance} • Time: ${routeInfo.duration}` : "Click map to set destination"}
+              {routeInfo ? `Driving Distance: ${routeInfo.distance} • Time: ${routeInfo.duration}` : "Click map or search to set destination"}
             </p>
           </div>
           <div className="space-x-2">
             <button onClick={handleCenterOnUser} className="bg-blue-600 text-white px-3 py-2 rounded flex items-center shadow hover:bg-blue-700 transition">
               Me
-              <svg className="w-4 h-4 ml-2" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8.00001 3C8.82844 3 9.50001 2.32843 9.50001 1.5C9.50001 0.671573 8.82844 0 8.00001 0C7.17158 0 6.50001 0.671573 6.50001 1.5C6.50001 2.32843 7.17158 3 8.00001 3Z" fill="#ffffff"></path>
-                <path d="M12 4V2H14V4C14 5.10457 13.1045 6 12 6H10.5454L10.9897 16H8.98773L8.76557 11H7.23421L7.01193 16H5.00995L5.42014 6.77308L3.29995 9.6L1.69995 8.4L4.99995 4H12Z" fill="#ffffff"></path>
-              </svg>
             </button>
           </div>
         </div>
@@ -295,16 +338,52 @@ const MapPanel = React.memo(function MapPanel({
 
       {!isJourneyActive && (
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="p-3 border rounded bg-slate-50">
-            <div className="text-xs text-gray-800 font-semibold">From</div>
-            <div className="font-medium text-sm truncate text-gray-800">{userPos ? `${userPos.lat.toFixed(4)}, ${userPos.lng.toFixed(4)}` : 'Locating...'}</div>
+          {/* FROM */}
+          <div className="p-3 border rounded-xl bg-slate-50">
+            <div className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-1">From (You)</div>
+            <div className="font-medium text-sm truncate text-slate-900 font-mono">
+                {userPos ? `${userPos.lat.toFixed(4)}, ${userPos.lng.toFixed(4)}` : 'Locating...'}
+            </div>
           </div>
-          <div className="p-3 border rounded bg-slate-50">
-            <div className="text-xs text-gray-800 font-semibold">To</div>
-            <div className="font-medium text-sm truncate text-gray-800">{target ? `${target.lat.toFixed(4)}, ${target.lng.toFixed(4)}` : 'Select on map'}</div>
+          
+          {/* TO - Enhanced Display */}
+          <div className="p-1 border rounded-xl bg-white shadow-sm flex items-stretch">
+            <div className="flex-1 p-2 pl-3 flex flex-col justify-center min-w-0">
+               <div className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-1">To Destination</div>
+               {target ? (
+                   <div>
+                       <div className="font-medium text-sm truncate text-slate-900 font-mono">
+                           {target.lat.toFixed(4)}, {target.lng.toFixed(4)}
+                       </div>
+                       <div className="text-xs text-slate-500 truncate">
+                           {targetAddress || 'Fetching address...'}
+                       </div>
+                   </div>
+               ) : (
+                   <div className="text-sm text-slate-400 italic">Select destination...</div>
+               )}
+            </div>
+            
+            {/* Pulsing Search Button */}
+            <button 
+                onClick={() => setIsSearchOpen(true)}
+                className="mx-1 my-1 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center transition-all group relative overflow-hidden"
+            >
+                {/* Pulse Effect */}
+                <span className="absolute inset-0 rounded-lg animate-ping bg-blue-400 opacity-20 pointer-events-none" />
+                
+                <Search className="w-5 h-5 relative z-10" />
+            </button>
           </div>
         </div>
       )}
+
+      {/* Search Modal */}
+      <SearchModal 
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        onSelectCallback={handleSearchSelect}
+      />
     </div>
   );
 });
